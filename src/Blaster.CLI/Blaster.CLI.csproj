@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Blaster.Valve\Blaster.Valve.csproj" />
+    <ProjectReference Include="..\Blaster.Batch\Blaster.Batch.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="TrimmerRoots.xml" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <!--
+      DefaultValueAttribute(Type, string) is guarded by [FeatureSwitchDefinition] in
+      System.Private.CoreLib. In trimmed builds the SDK sets _DefaultValueAttributeSupport=false,
+      which constant-folds IsSupported=false and makes get_Value() throw at runtime.
+      SteamKit2 uses [DefaultValue(typeof(ulong), "18446744073709551615")] on protobuf header
+      fields, and protobuf-net reads those values via reflection. Set the SDK property to true
+      before the ILLink.targets default fires so the linker constant-folds IsSupported=true.
+    -->
+    <_DefaultValueAttributeSupport>true</_DefaultValueAttributeSupport>
+  </PropertyGroup>
+
+</Project>

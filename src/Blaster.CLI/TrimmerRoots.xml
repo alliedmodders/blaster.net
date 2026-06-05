@@ -1,0 +1,20 @@
+<linker>
+  <!--
+    protobuf-net reflects on [DefaultValue] attributes at runtime to build serializers
+    for SteamKit2's protobuf message types. The (Type, string) constructor overload of
+    DefaultValueAttribute calls TypeDescriptor.GetConverter(type) to resolve the value.
+    When System.ComponentModel.TypeConverter is trimmed, the constructor leaves the
+    attribute in an unresolvable state, and get_Value() throws:
+    "Runtime instantiation of this attribute is not allowed."
+    Preserve the full TypeConverter assembly so the resolution works at runtime.
+  -->
+  <assembly fullname="System.ComponentModel.TypeConverter" preserve="all" />
+  <!--
+    protobuf-net also reads [DataMember] / [DataContract] to support WCF-style annotations
+    on protobuf types. Preserve these attribute types in case SteamKit2 uses them.
+  -->
+  <assembly fullname="System.Runtime.Serialization.Primitives">
+    <type fullname="System.Runtime.Serialization.DataMemberAttribute" preserve="all" />
+    <type fullname="System.Runtime.Serialization.DataContractAttribute" preserve="all" />
+  </assembly>
+</linker>

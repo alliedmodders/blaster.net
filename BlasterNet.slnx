@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Blaster.AmStats/Blaster.AmStats.csproj" />
+    <Project Path="src/Blaster.Batch/Blaster.Batch.csproj" />
+    <Project Path="src/Blaster.CLI/Blaster.CLI.csproj" />
+    <Project Path="src/Blaster.Tests/Blaster.Tests.csproj" />
+    <Project Path="src/Blaster.Valve/Blaster.Valve.csproj" />
+  </Folder>
+</Solution>

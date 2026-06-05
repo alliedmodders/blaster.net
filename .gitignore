@@ -1,0 +1,41 @@
+# Build output
+bin/
+obj/
+out/
+artifacts/
+
+# Test output
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# .NET user/IDE files
+*.user
+*.rsuser
+*.suo
+*.userprefs
+.vs/
+.vscode/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local runtime/test secrets and config overrides
+config.yml
+config.*.yml
+!config.example.yml
+.env
+.env.*
+
+# Local Steam master-server cache/state
+cellid.txt
