@@ -27,4 +27,10 @@ public static class ValveConstants
     // error is retried rather than silently dropping a whole fan-out bucket.
     public const int MasterQueryMaxAttempts = 3;
     public const int MasterQueryRetryBaseDelayMs = 1000;
+
+    // Steam Web API documented limit: 200 requests / 5 minutes == one request per 1.5s. The Web API
+    // transport throttles to this interval and, if it still receives a 429, backs off (honouring
+    // Retry-After) up to WebApiMaxRateLimitWaits times before giving up on a query.
+    public const int WebApiMinIntervalMs = 1500;
+    public const int WebApiMaxRateLimitWaits = 5;
 }

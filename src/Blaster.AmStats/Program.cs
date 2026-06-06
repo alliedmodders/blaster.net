@@ -18,6 +18,8 @@ internal class Program
             var logLevel = LogLevel.Information;
             string? steamUsername = null;
             string? steamPassword = null;
+            string? transport = null;
+            string? webApiKey = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -42,6 +44,10 @@ internal class Program
                     steamUsername = args[++i];
                 else if (args[i] == "--steam-password" && i + 1 < args.Length)
                     steamPassword = args[++i];
+                else if (args[i] == "--transport" && i + 1 < args.Length)
+                    transport = args[++i];
+                else if (args[i] == "--steam-webapi-key" && i + 1 < args.Length)
+                    webApiKey = args[++i];
                 else if (args[i] == "--help")
                 {
                     ShowHelp();
@@ -60,7 +66,7 @@ internal class Program
                 builder.SetMinimumLevel(logLevel)
                        .AddCompactConsole()))
             {
-                HandleCommand(config, game, logLevel, steamUsername, steamPassword, loggerFactory);
+                HandleCommand(config, game, logLevel, steamUsername, steamPassword, transport, webApiKey, loggerFactory);
             }
             return 0;
         }
@@ -82,14 +88,16 @@ Usage:
 Options:
   --config <PATH>         Config file path (default: config.yml)
   --game <GAME>           Game to query: hl1 or hl2 (required)
-  --steam-username <U>    Steam username (overrides config/env)
-  --steam-password <P>    Steam password (overrides config/env)
+  --transport <T>         Master-server transport: steam or web-api (config: steam.transport)
+  --steam-username <U>    Steam username (overrides config/env); steam transport
+  --steam-password <P>    Steam password (overrides config/env); steam transport
+  --steam-webapi-key <K>  Steam Web API key (overrides config/env); web-api transport
   --log-level <LEVEL>     Log level: trace, debug, info, warn, error, critical (default: info)
   --help                  Show this help message
 ");
     }
 
-    static void HandleCommand(string config, string game, LogLevel logLevel, string? steamUsername, string? steamPassword, ILoggerFactory loggerFactory)
+    static void HandleCommand(string config, string game, LogLevel logLevel, string? steamUsername, string? steamPassword, string? transport, string? webApiKey, ILoggerFactory loggerFactory)
     {
         var gameId = game switch
         {
@@ -98,7 +106,7 @@ Options:
             _ => throw new ArgumentException($"Unrecognized game: {game}")
         };
 
-        var collector = new StatsCollector(config, gameId, steamUsername, steamPassword, loggerFactory);
+        var collector = new StatsCollector(config, gameId, steamUsername, steamPassword, transport, webApiKey, loggerFactory);
         collector.Collect();
         collector.Finish();
     }

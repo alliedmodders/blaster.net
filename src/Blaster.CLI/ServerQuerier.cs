@@ -13,16 +13,34 @@ namespace Blaster.CLI;
 public class CliServerQuerier
 {
     private readonly int _maxConcurrency;
-    private readonly string _steamUsername;
-    private readonly string _steamPassword;
+    private readonly MasterServerTransport _transport;
+    private readonly string? _steamUsername;
+    private readonly string? _steamPassword;
+    private readonly string? _webApiKey;
     private readonly ILoggerFactory _loggerFactory;
 
-    public CliServerQuerier(int maxConcurrency, string steamUsername, string steamPassword, ILoggerFactory loggerFactory)
+    public CliServerQuerier(
+        int maxConcurrency,
+        MasterServerTransport transport,
+        string? steamUsername,
+        string? steamPassword,
+        string? webApiKey,
+        ILoggerFactory loggerFactory)
     {
         _maxConcurrency = maxConcurrency;
+        _transport = transport;
         _steamUsername = steamUsername;
         _steamPassword = steamPassword;
+        _webApiKey = webApiKey;
         _loggerFactory = loggerFactory;
+    }
+
+    private MasterServerQuerier CreateMasterQuerier()
+    {
+        var logger = _loggerFactory.CreateLogger<MasterServerQuerier>();
+        return _transport == MasterServerTransport.WebApi
+            ? MasterServerQuerier.CreateWebApi(_webApiKey!, logger)
+            : new MasterServerQuerier(username: _steamUsername, password: _steamPassword, logger: logger);
     }
 
     /// <summary>
@@ -43,7 +61,7 @@ public class CliServerQuerier
             {
                 try
                 {
-                    using (var querier = new MasterServerQuerier(username: _steamUsername, password: _steamPassword, logger: _loggerFactory.CreateLogger<MasterServerQuerier>()))
+                    using (var querier = CreateMasterQuerier())
                     {
                         querier.FilterAppIds((AppId)appId);
                         await querier.QueryAsync(async (servers) =>

@@ -17,8 +17,10 @@ public class StatsCollector
     private readonly DatabaseConnection _db;
     private readonly long _gameId;
     private readonly TimeSpan _timeout = TimeSpan.FromSeconds(3);
+    private readonly MasterServerTransport _transport;
     private readonly string _steamUsername;
     private readonly string _steamPassword;
+    private readonly string _webApiKey;
     private readonly ILoggerFactory _loggerFactory;
 
     private readonly Dictionary<(string ModString, ulong ModGameId), GameMod> _mods = new();
@@ -34,6 +36,8 @@ public class StatsCollector
         long gameId,
         string? steamUsernameOverride = null,
         string? steamPasswordOverride = null,
+        string? transportOverride = null,
+        string? webApiKeyOverride = null,
         ILoggerFactory? loggerFactory = null)
     {
         var config = ConfigParser.Parse(configPath);
@@ -43,22 +47,55 @@ public class StatsCollector
             config["database.password"],
             config["database.dbname"]
         );
-        
+
         _db = new DatabaseConnection(connStr);
         _gameId = gameId;
         _loggerFactory = loggerFactory ?? LoggerFactory.Create(builder => builder.AddCompactConsole());
-        _steamUsername = ResolveCredential(
-            steamUsernameOverride,
-            config,
-            "steam.username",
-            "BLASTER_STEAM_USERNAME");
-        _steamPassword = ResolveCredential(
-            steamPasswordOverride,
-            config,
-            "steam.password",
-            "BLASTER_STEAM_PASSWORD");
-        
+
+        _transport = MasterServerTransports.Parse(
+            ResolveOptional(transportOverride, config, "steam.transport", "BLASTER_STEAM_TRANSPORT"));
+
+        if (_transport == MasterServerTransport.WebApi)
+        {
+            _webApiKey = ResolveCredential(
+                webApiKeyOverride, config, "steam.webapi_key", "BLASTER_STEAM_WEBAPI_KEY");
+            _steamUsername = "";
+            _steamPassword = "";
+        }
+        else
+        {
+            _steamUsername = ResolveCredential(
+                steamUsernameOverride, config, "steam.username", "BLASTER_STEAM_USERNAME");
+            _steamPassword = ResolveCredential(
+                steamPasswordOverride, config, "steam.password", "BLASTER_STEAM_PASSWORD");
+            _webApiKey = "";
+        }
+
         LoadGameData();
+    }
+
+    private MasterServerQuerier CreateMasterQuerier()
+    {
+        var logger = _loggerFactory.CreateLogger<MasterServerQuerier>();
+        return _transport == MasterServerTransport.WebApi
+            ? MasterServerQuerier.CreateWebApi(_webApiKey, logger)
+            : new MasterServerQuerier(username: _steamUsername, password: _steamPassword, logger: logger);
+    }
+
+    private static string? ResolveOptional(
+        string? overrideValue,
+        Dictionary<string, string> config,
+        string configKey,
+        string environmentVariable)
+    {
+        if (!string.IsNullOrWhiteSpace(overrideValue))
+            return overrideValue;
+
+        if (config.TryGetValue(configKey, out var configValue) && !string.IsNullOrWhiteSpace(configValue))
+            return configValue;
+
+        var envValue = Environment.GetEnvironmentVariable(environmentVariable);
+        return string.IsNullOrWhiteSpace(envValue) ? null : envValue;
     }
 
     private static string ResolveCredential(
@@ -151,7 +188,7 @@ public class StatsCollector
 
         try
         {
-            using (var master = new MasterServerQuerier(username: _steamUsername, password: _steamPassword, logger: _loggerFactory.CreateLogger<MasterServerQuerier>()))
+            using (var master = CreateMasterQuerier())
             {
                 // Set up filters based on game
                 if (_gameId == 1)

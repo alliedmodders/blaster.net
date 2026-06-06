@@ -108,14 +108,25 @@ set BLASTER_STEAM_PASSWORD=mypass
 dotnet run --project src/Blaster.CLI -- --appids 240 --format list
 ```
 
+Using the Steam Web API transport:
+
+```bash
+dotnet run --project src/Blaster.CLI -- --appids 240 --transport web-api --steam-webapi-key YOURKEYHERE
+# or via environment variable:
+set BLASTER_STEAM_WEBAPI_KEY=YOURKEYHERE
+dotnet run --project src/Blaster.CLI -- --appids 240 --transport web-api
+```
+
 ### CLI options
 
 | Option | Description |
 |---|---|
 | `--appids <IDS...>` | Required. One or more Valve app IDs |
 | `--format <list\|map\|lines>` | Output format (default: `list`) |
-| `--steam-username <U>` | Steam username (or `BLASTER_STEAM_USERNAME`) |
-| `--steam-password <P>` | Steam password (or `BLASTER_STEAM_PASSWORD`) |
+| `--transport <steam\|web-api>` | Master-server transport (default: `steam`); see [Master server transports](#master-server-transports) |
+| `--steam-username <U>` | Steam username (or `BLASTER_STEAM_USERNAME`); required for `steam` transport |
+| `--steam-password <P>` | Steam password (or `BLASTER_STEAM_PASSWORD`); required for `steam` transport |
+| `--steam-webapi-key <K>` | Steam Web API key (or `BLASTER_STEAM_WEBAPI_KEY`); required for `web-api` transport |
 | `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
 | `--no-info` | Skip A2S_INFO queries |
 | `--no-rules` | Skip A2S_RULES queries |
@@ -149,8 +160,10 @@ dotnet run --project src/Blaster.AmStats -- --game hl1 --config config.yml --log
 |---|---|
 | `--game <hl1\|hl2>` | Required. Game to collect stats for |
 | `--config <PATH>` | Config file path (default: `config.yml`) |
-| `--steam-username <U>` | Steam username (overrides config/env) |
-| `--steam-password <P>` | Steam password (overrides config/env) |
+| `--transport <steam\|web-api>` | Master-server transport (overrides config key `steam.transport`); see [Master server transports](#master-server-transports) |
+| `--steam-username <U>` | Steam username (overrides config/env); required for `steam` transport |
+| `--steam-password <P>` | Steam password (overrides config/env); required for `steam` transport |
+| `--steam-webapi-key <K>` | Steam Web API key (overrides config/env); required for `web-api` transport |
 | `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
 | `--help` | Show help |
 
@@ -167,6 +180,9 @@ database:
 steam:
   username: myuser
   password: mypass
+  # Optional — choose master-server transport. Values: steam (default), web-api
+  # transport: web-api
+  # webapi_key: YOURKEYHERE
 ```
 
 `--game` maps to:
@@ -174,8 +190,15 @@ steam:
 - `hl1` -> game id `1`
 - `hl2` -> game id `2`
 
-Steam credentials for runtime can come from:
+Steam credentials and transport settings for runtime can come from:
 
-1. CLI args (`--steam-username`, `--steam-password`)
-2. Config (`steam.username`, `steam.password`) for AmStats
-3. Environment (`BLASTER_STEAM_USERNAME`, `BLASTER_STEAM_PASSWORD`)
+1. CLI args (`--steam-username`, `--steam-password`, `--transport`, `--steam-webapi-key`)
+2. Config file (`steam.username`, `steam.password`, `steam.transport`, `steam.webapi_key`) for AmStats
+3. Environment variables (`BLASTER_STEAM_USERNAME`, `BLASTER_STEAM_PASSWORD`, `BLASTER_STEAM_TRANSPORT`, `BLASTER_STEAM_WEBAPI_KEY`)
+
+## Master server transports
+
+Blaster.NET supports two transports for querying the Steam master server:
+
+- **`steam`** (default): Opens a live SteamKit2 connection to the Steam Game Management Server (GMS) using a Steam account. Requires `--steam-username` / `--steam-password` (or their config/env equivalents).
+- **`web-api`**: Queries the Steam Web API (`IGameServersService/GetServerList`) over HTTPS instead of a direct Steam connection. Requires a Steam Web API key via `--steam-webapi-key` (or `BLASTER_STEAM_WEBAPI_KEY`). No Steam account is needed. The Web API is subject to a documented rate limit of approximately 200 requests per 5 minutes; the client enforces a minimum 1.5-second interval between requests and handles HTTP 429 responses gracefully by honoring the `Retry-After` header before retrying.

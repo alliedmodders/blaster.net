@@ -20,6 +20,8 @@ internal class Program
             var logLevel = LogLevel.Information;
             string? steamUsername = null;
             string? steamPassword = null;
+            string? webApiKey = null;
+            var transport = "steam";
 
             int i = 0;
             while (i < args.Length)
@@ -73,6 +75,14 @@ internal class Program
                         if (i + 1 < args.Length)
                             steamPassword = args[++i];
                         break;
+                    case "--transport":
+                        if (i + 1 < args.Length)
+                            transport = args[++i];
+                        break;
+                    case "--steam-webapi-key":
+                        if (i + 1 < args.Length)
+                            webApiKey = args[++i];
+                        break;
                     case "--help":
                     case "-h":
                         ShowHelp();
@@ -88,14 +98,25 @@ internal class Program
                 return 1;
             }
 
+            var transportMode = MasterServerTransports.Parse(transport);
+            webApiKey ??= Environment.GetEnvironmentVariable("BLASTER_STEAM_WEBAPI_KEY");
             steamUsername ??= Environment.GetEnvironmentVariable("BLASTER_STEAM_USERNAME");
             steamPassword ??= Environment.GetEnvironmentVariable("BLASTER_STEAM_PASSWORD");
 
-            if (string.IsNullOrWhiteSpace(steamUsername) || string.IsNullOrWhiteSpace(steamPassword))
+            if (transportMode == MasterServerTransport.WebApi)
+            {
+                if (string.IsNullOrWhiteSpace(webApiKey))
+                {
+                    Console.Error.WriteLine(
+                        "Error: --transport web-api requires a Web API key. Set --steam-webapi-key or BLASTER_STEAM_WEBAPI_KEY.");
+                    return 1;
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(steamUsername) || string.IsNullOrWhiteSpace(steamPassword))
             {
                 Console.Error.WriteLine(
-                    "Error: Steam credentials are required. Set --steam-username/--steam-password " +
-                    "or BLASTER_STEAM_USERNAME/BLASTER_STEAM_PASSWORD.");
+                    "Error: the Steam connection requires credentials. Set --steam-username/--steam-password " +
+                    "or BLASTER_STEAM_USERNAME/BLASTER_STEAM_PASSWORD (or use --transport web-api with a Web API key).");
                 return 1;
             }
 
@@ -103,7 +124,7 @@ internal class Program
                 builder.SetMinimumLevel(logLevel)
                        .AddCompactConsole()))
             {
-                await HandleCommand(appIds.ToArray(), format, skipInfo, skipRules, concurrency, steamUsername, steamPassword, loggerFactory);
+                await HandleCommand(appIds.ToArray(), format, skipInfo, skipRules, concurrency, transportMode, steamUsername, steamPassword, webApiKey, loggerFactory);
             }
             return 0;
         }
@@ -125,8 +146,10 @@ Usage:
 Options:
   --appids <IDS>         Valve application IDs to query (required, space-separated)
   --format <FORMAT>      Output format: list, map, or lines (default: list)
-  --steam-username <U>   Steam username (or BLASTER_STEAM_USERNAME)
-  --steam-password <P>   Steam password (or BLASTER_STEAM_PASSWORD)
+  --transport <T>        Master-server transport: steam or web-api (default: steam)
+  --steam-username <U>   Steam username (or BLASTER_STEAM_USERNAME); steam transport
+  --steam-password <P>   Steam password (or BLASTER_STEAM_PASSWORD); steam transport
+  --steam-webapi-key <K> Steam Web API key (or BLASTER_STEAM_WEBAPI_KEY); web-api transport
   --log-level <LEVEL>    Log level: trace, debug, info, warn, error, critical (default: info)
   --no-info              Skip server info queries
   --no-rules             Skip rules queries
@@ -141,11 +164,13 @@ Options:
         bool skipInfo,
         bool skipRules,
         int concurrency,
-        string steamUsername,
-        string steamPassword,
+        MasterServerTransport transport,
+        string? steamUsername,
+        string? steamPassword,
+        string? webApiKey,
         ILoggerFactory loggerFactory)
     {
-        var querier = new CliServerQuerier(concurrency, steamUsername, steamPassword, loggerFactory);
+        var querier = new CliServerQuerier(concurrency, transport, steamUsername, steamPassword, webApiKey, loggerFactory);
         var results = await querier.QueryServersAsync(appIds, skipInfo: skipInfo, skipRules: skipRules);
 
         var formatter = new OutputFormatter();

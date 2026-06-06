@@ -15,6 +15,31 @@ namespace Blaster.Valve;
 public delegate Task MasterQueryCallback(IEnumerable<IPEndPoint> servers);
 
 /// <summary>
+/// Selects how server lists are retrieved: a live Steam connection or the Steam Web API.
+/// </summary>
+public enum MasterServerTransport
+{
+    Steam,
+    WebApi,
+}
+
+/// <summary>
+/// Parsing helpers for <see cref="MasterServerTransport"/>.
+/// </summary>
+public static class MasterServerTransports
+{
+    /// <summary>
+    /// Parses a transport name ("steam" or "web-api"); null/empty defaults to <see cref="MasterServerTransport.Steam"/>.
+    /// </summary>
+    public static MasterServerTransport Parse(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "steam" => MasterServerTransport.Steam,
+        "web-api" or "webapi" or "web_api" => MasterServerTransport.WebApi,
+        _ => throw new ArgumentException($"Unknown transport '{value}'. Use 'steam' or 'web-api'."),
+    };
+}
+
+/// <summary>
 /// Source of master-server query results. Abstracts <see cref="SteamConnectionPool"/> so the fan-out
 /// in <see cref="MasterServerQuerier"/> can be driven against a simulated master server in tests.
 /// </summary>
@@ -315,6 +340,7 @@ public class MasterServerQuerier : IDisposable
     private static SteamConnectionPool? _sharedPool;
 
     private readonly IMasterQuerySource _source;
+    private readonly bool _ownsSource;
     private readonly List<uint> _appIds = [];
     private readonly ILogger<MasterServerQuerier>? _logger;
     private FanOutStats? _stats;
@@ -345,13 +371,22 @@ public class MasterServerQuerier : IDisposable
     }
 
     /// <summary>
-    /// Test seam: drives the fan-out against an arbitrary <see cref="IMasterQuerySource"/> (e.g. a
-    /// simulated master server) instead of the shared Steam connection pool.
+    /// Creates a querier that fetches server lists from the Steam Web API
+    /// (<c>IGameServersService/GetServerList</c>) instead of a live Steam connection.
     /// </summary>
-    internal MasterServerQuerier(IMasterQuerySource source, ILogger<MasterServerQuerier>? logger = null)
+    public static MasterServerQuerier CreateWebApi(string apiKey, ILogger<MasterServerQuerier>? logger = null)
+        => new(new WebApiQuerySource(apiKey, logger), logger, ownsSource: true);
+
+    /// <summary>
+    /// Drives the fan-out against an arbitrary <see cref="IMasterQuerySource"/> — a Web API source
+    /// (<paramref name="ownsSource"/> true, disposed with this querier) or a simulated master server
+    /// in tests. The shared Steam connection pool is never owned here, so it survives reuse.
+    /// </summary>
+    internal MasterServerQuerier(IMasterQuerySource source, ILogger<MasterServerQuerier>? logger = null, bool ownsSource = false)
     {
         _logger = logger;
         _source = source;
+        _ownsSource = ownsSource;
     }
 
     /// <summary>
@@ -913,6 +948,12 @@ public class MasterServerQuerier : IDisposable
 
         _disposed = true;
         GC.SuppressFinalize(this);
-        // Don't disconnect shared pool - it stays alive for reuse
+
+        // Dispose a source we own (e.g. the Web API HttpClient); never the shared Steam pool, which
+        // stays alive for reuse.
+        if (_ownsSource && _source is IDisposable disposableSource)
+        {
+            disposableSource.Dispose();
+        }
     }
 }
