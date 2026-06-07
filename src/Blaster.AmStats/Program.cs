@@ -2,6 +2,7 @@
 // Blaster (C) Copyright 2014 AlliedModders LLC
 
 using Blaster.AmStats;
+using Blaster.Valve;
 using Microsoft.Extensions.Logging;
 
 namespace Blaster.AmStats;
@@ -57,7 +58,7 @@ internal class Program
 
             using (var loggerFactory = LoggerFactory.Create(builder =>
                 builder.SetMinimumLevel(logLevel)
-                       .AddConsole()))
+                       .AddCompactConsole()))
             {
                 HandleCommand(config, game, logLevel, steamUsername, steamPassword, loggerFactory);
             }

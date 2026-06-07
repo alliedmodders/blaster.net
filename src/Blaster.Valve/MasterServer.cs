@@ -224,7 +224,7 @@ internal class SteamConnectionPool : IMasterQuerySource
             var serverCount = callback.Servers.Count;
             stopwatch.Stop();
 
-            _logger?.LogInformation("Query returned {Count} servers in {Elapsed}ms (filter: {Filter})",
+            _logger?.LogDebug("Query returned {Count} servers in {Elapsed}ms (filter: {Filter})",
                 serverCount, stopwatch.ElapsedMilliseconds, filter);
 
             if (serverCount >= ValveConstants.MaxServersPerQuery)
@@ -497,7 +497,7 @@ public class MasterServerQuerier : IDisposable
             _stats = null;
             _runQueries += stats.TotalQueries;
             _runCapHits += stats.CapHits;
-            _logger?.LogInformation(
+            _logger?.LogTrace(
                 "App {AppId} fan-out: {Total} queries ({Tier} tier, {Map} map, {Name} name, {Addr} gameaddr; {OrBatch} \\or\\-batched), {CapHits} hit cap → {Servers} servers in {Elapsed}ms",
                 appId, stats.TotalQueries, stats.TierQueries, stats.MapQueries, stats.NameQueries, stats.GameAddrQueries,
                 stats.OrBatchQueries, stats.CapHits, totalNew, stopwatch.ElapsedMilliseconds);

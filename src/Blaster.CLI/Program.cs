@@ -101,7 +101,7 @@ internal class Program
 
             using (var loggerFactory = LoggerFactory.Create(builder =>
                 builder.SetMinimumLevel(logLevel)
-                       .AddConsole()))
+                       .AddCompactConsole()))
             {
                 await HandleCommand(appIds.ToArray(), format, skipInfo, skipRules, concurrency, steamUsername, steamPassword, loggerFactory);
             }
