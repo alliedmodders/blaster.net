@@ -38,6 +38,8 @@ Run only integration tests:
 dotnet test --filter "Category=Integration"
 ```
 
+See [TESTING.md](TESTING.md) for running unit vs integration tests and the required environment variables.
+
 ## Standalone executables
 
 Build optimized, self-contained Linux executables (no .NET runtime required):
@@ -114,7 +116,7 @@ dotnet run --project src/Blaster.CLI -- --appids 240 --format list
 | `--format <list\|map\|lines>` | Output format (default: `list`) |
 | `--steam-username <U>` | Steam username (or `BLASTER_STEAM_USERNAME`) |
 | `--steam-password <P>` | Steam password (or `BLASTER_STEAM_PASSWORD`) |
-| `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`) |
+| `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
 | `--no-info` | Skip A2S_INFO queries |
 | `--no-rules` | Skip A2S_RULES queries |
 | `--concurrency <N>` | Max concurrent server queries (default: `20`) |
@@ -149,7 +151,7 @@ dotnet run --project src/Blaster.AmStats -- --game hl1 --config config.yml --log
 | `--config <PATH>` | Config file path (default: `config.yml`) |
 | `--steam-username <U>` | Steam username (overrides config/env) |
 | `--steam-password <P>` | Steam password (overrides config/env) |
-| `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`) |
+| `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
 | `--help` | Show help |
 
 ### Config file (`config.yml`)
