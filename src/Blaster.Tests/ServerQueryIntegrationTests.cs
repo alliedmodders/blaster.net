@@ -10,14 +10,19 @@ namespace Blaster.Tests;
 /// These tests are designed to work with a real or mocked game server.
 /// They are not run by default - use [Trait("Category", "Integration")] filtering to run them.
 /// </summary>
-public class ServerQueryIntegrationTests
+public class ServerQueryIntegrationTests : IClassFixture<A2SServerFixture>
 {
-    // Common test servers (these should be stable Valve servers for testing)
-    private const string TestServerAddress = "192.168.5.9:27015";
+    // Resolved at runtime from BLASTER_TEST_SERVER_ADDRESS or the Steam master (see A2SServerFixture).
+    private readonly string TestServerAddress;
     private const int TestTimeout = 5000; // 5 second timeout
 
+    public ServerQueryIntegrationTests(A2SServerFixture fixture)
+    {
+        TestServerAddress = fixture.ServerAddress;
+    }
+
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_ValidServer_ReturnsServerInfo()
     {
         // Arrange
@@ -35,7 +40,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_ParsesProtocol_HasValidProtocolVersion()
     {
         // Arrange
@@ -49,7 +54,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_ParsesServerType_ReturnsValidType()
     {
         // Arrange
@@ -65,7 +70,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_ParsesServerOS_ReturnsValidOS()
     {
         // Arrange
@@ -80,7 +85,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_SourceEngine_ParsesExtendedInfo()
     {
         // Arrange
@@ -100,7 +105,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryRules_ValidServer_ReturnsDictionary()
     {
         // Arrange
@@ -117,7 +122,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryRules_CommonRules_ContainsStandardServerRules()
     {
         // Arrange
@@ -141,7 +146,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryRules_VerifiesRuleValues_StringFormat()
     {
         // Arrange
@@ -164,7 +169,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_InvalidServer_ThrowsException()
     {
         // Arrange
@@ -174,7 +179,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_Goldsrc_ParsesModInfo()
     {
         // Arrange - this would need a GoldSrc server
@@ -217,7 +222,7 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_MultipleQueries_ReturnConsistentResults()
     {
         // Arrange
@@ -235,17 +240,18 @@ public class ServerQueryIntegrationTests
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_Timeout_ThrowsException()
     {
-        // Arrange - use a very short timeout
-        using var querier = new ServerQuerier(TestServerAddress, TimeSpan.FromMilliseconds(50));
+        // Arrange - a non-routable TEST-NET-1 (RFC 5737) address so the query deterministically times out
+        // regardless of how fast the resolved live server is.
+        using var querier = new ServerQuerier("192.0.2.1:27015", TimeSpan.FromMilliseconds(50));
         // Act & Assert - should timeout before getting response
         Assert.Throws<ServerQueryException>(() => querier.QueryInfo());
     }
 
     [Trait("Category", "Integration")]
-    [Fact(Skip = "Requires running game server")]
+    [Fact]
     public void QueryInfo_GameEngineDetection_CorrectlyIdentifiesSource()
     {
         // Arrange
