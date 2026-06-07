@@ -20,5 +20,11 @@ public static class ValveConstants
     public const byte S2A_PLAYER = 0x44;
     public const byte S2A_RULES = 0x45;
 
-    public const string MasterServer = "hl2master.steampowered.com:27011";
+    // Steam's limit per query
+    public const uint MaxServersPerQuery = 10000;
+
+    // Retry policy for the rate-limited Steam GMS master-server queries. A timeout or transient
+    // error is retried rather than silently dropping a whole fan-out bucket.
+    public const int MasterQueryMaxAttempts = 3;
+    public const int MasterQueryRetryBaseDelayMs = 1000;
 }

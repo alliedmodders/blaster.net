@@ -42,7 +42,7 @@ public class MasterServerIntegrationTests : IDisposable
 
     [Trait("Category", "Integration")]
     [Fact]
-    public async Task QueryServers_MultipleFilters_NoneReturnExactly50000()
+    public async Task QueryServers_MultipleFilters_NoneReturnExactlyMax()
     {
         // Arrange
         var logger = _loggingFixture.CreateLogger<MasterServerQuerier>();
@@ -59,11 +59,11 @@ public class MasterServerIntegrationTests : IDisposable
         });
 
         // Assert
-        // If any single query returns exactly 50000, we've hit the Steam limit
+        // If any single query returns exactly the max, we've hit the Steam limit
         // and need to adjust our filter combinations
-        var batchesWith50k = results.Where(kvp => kvp.Value == 50000).ToList();
+        var batchesWithMax = results.Where(kvp => kvp.Value == ValveConstants.MaxServersPerQuery).ToList();
         
-        Assert.Empty(batchesWith50k);
+        Assert.Empty(batchesWithMax);
         // Connection should work even if no results returned
     }
 
@@ -211,7 +211,7 @@ public class MasterServerIntegrationTests : IDisposable
                 // With multiple batches, check they're not all identical sizes
                 // (indicates filter combinations are working)
                 var uniqueSizes = batchSizes.Distinct().Count();
-                Assert.True(uniqueSizes > 1 || batchSizes.Sum() >= 50000,
+                Assert.True(uniqueSizes > 1 || batchSizes.Sum() >= ValveConstants.MaxServersPerQuery,
                     "Either batches should have different sizes (good filtering) " +
                     "or total should be significant (good coverage)");
             }
