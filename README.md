@@ -16,7 +16,7 @@ It includes:
 - Switched from old master server to GMS server query with SteamKit
 - Added support for more games / mods
 - Updated CS:GO to its new app id and re-enabled it for querying
-- Filtered out SDR "fakeip" servers from querying
+- Filtered out SDR "fakeip" servers from querying by default; opt-in querying now supported via `--include-fakeip`
 - Added `valve_game_id` and `last_seen` columns to AmStats schema
 
 ## Requirements
@@ -130,6 +130,7 @@ dotnet run --project src/Blaster.CLI -- --appids 240 --transport web-api
 | `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
 | `--no-info` | Skip A2S_INFO queries |
 | `--no-rules` | Skip A2S_RULES queries |
+| `--include-fakeip` | Opt-in: also query SDR/fake-IP (169.254.*) servers via QueryByFakeIP instead of dropping them; see [Fake-IP / SDR servers](#fake-ip--sdr-servers) |
 | `--concurrency <N>` | Max concurrent server queries (default: `20`) |
 | `--help` | Show help |
 
@@ -165,6 +166,7 @@ dotnet run --project src/Blaster.AmStats -- --game hl1 --config config.yml --log
 | `--steam-password <P>` | Steam password (overrides config/env); required for `steam` transport |
 | `--steam-webapi-key <K>` | Steam Web API key (overrides config/env); required for `web-api` transport |
 | `--log-level <LEVEL>` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `critical` (default: `info`); `trace` surfaces detailed per-app fan-out query statistics |
+| `--include-fakeip` | Opt-in: also query SDR/fake-IP (169.254.*) servers via QueryByFakeIP instead of dropping them (config: `fakeip.enabled`, env: `BLASTER_FAKEIP`); see [Fake-IP / SDR servers](#fake-ip--sdr-servers) |
 | `--help` | Show help |
 
 ### Config file (`config.yml`)
@@ -183,6 +185,9 @@ steam:
   # Optional — choose master-server transport. Values: steam (default), web-api
   # transport: web-api
   # webapi_key: YOURKEYHERE
+fakeip:
+  # Optional — set to true to query SDR/fake-IP servers via QueryByFakeIP
+  # enabled: false
 ```
 
 `--game` maps to:
@@ -190,11 +195,15 @@ steam:
 - `hl1` -> game id `1`
 - `hl2` -> game id `2`
 
-Steam credentials and transport settings for runtime can come from:
+Steam credentials, transport settings, and fake-IP behaviour for runtime can come from:
 
-1. CLI args (`--steam-username`, `--steam-password`, `--transport`, `--steam-webapi-key`)
-2. Config file (`steam.username`, `steam.password`, `steam.transport`, `steam.webapi_key`) for AmStats
-3. Environment variables (`BLASTER_STEAM_USERNAME`, `BLASTER_STEAM_PASSWORD`, `BLASTER_STEAM_TRANSPORT`, `BLASTER_STEAM_WEBAPI_KEY`)
+1. CLI args (`--steam-username`, `--steam-password`, `--transport`, `--steam-webapi-key`, `--include-fakeip`)
+2. Config file (`steam.username`, `steam.password`, `steam.transport`, `steam.webapi_key`, `fakeip.enabled`) for AmStats
+3. Environment variables (`BLASTER_STEAM_USERNAME`, `BLASTER_STEAM_PASSWORD`, `BLASTER_STEAM_TRANSPORT`, `BLASTER_STEAM_WEBAPI_KEY`, `BLASTER_FAKEIP`)
+
+## Fake-IP / SDR servers
+
+Some Valve game servers are hosted behind Steam Datagram Relay (SDR) and advertise a link-local "fake IP" address in the 169.254.0.0/16 range. These addresses are unreachable over ordinary UDP, so Blaster drops them by default. Passing `--include-fakeip` opts in to querying them via `GameServers.QueryByFakeIP`, using whichever transport is selected (Steam CM connection or Web API). This fake-IP pass runs concurrently with the normal UDP A2S pass, so overall collection time is not significantly increased. For some games — TF2 is a prominent example — fake-IP servers are a large fraction of the total server population, and omitting them will materially under-count results.
 
 ## Master server transports
 

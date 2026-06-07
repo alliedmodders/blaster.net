@@ -17,6 +17,7 @@ public class CliServerQuerier
     private readonly string? _steamUsername;
     private readonly string? _steamPassword;
     private readonly string? _webApiKey;
+    private readonly bool _includeFakeIp;
     private readonly ILoggerFactory _loggerFactory;
 
     public CliServerQuerier(
@@ -25,6 +26,7 @@ public class CliServerQuerier
         string? steamUsername,
         string? steamPassword,
         string? webApiKey,
+        bool includeFakeIp,
         ILoggerFactory loggerFactory)
     {
         _maxConcurrency = maxConcurrency;
@@ -32,6 +34,7 @@ public class CliServerQuerier
         _steamUsername = steamUsername;
         _steamPassword = steamPassword;
         _webApiKey = webApiKey;
+        _includeFakeIp = includeFakeIp;
         _loggerFactory = loggerFactory;
     }
 
@@ -53,67 +56,80 @@ public class CliServerQuerier
 
         try
         {
-            // Query master server for each app ID
             var allServers = new HashSet<string>();
-            var allServersLock = new object();
+            var fakeIpServers = new List<FakeIpServer>();
+
+            // One querier kept alive for the whole run so fake-IP servers can be queried after the
+            // master fan-out (and so an owned Web API source isn't disposed mid-run).
+            using var querier = CreateMasterQuerier();
+            querier.IncludeFakeIp = _includeFakeIp;
 
             foreach (var appId in appIds)
             {
                 try
                 {
-                    using (var querier = CreateMasterQuerier())
+                    querier.ClearFilters();
+                    querier.FilterAppIds((AppId)appId);
+                    await querier.QueryAsync(servers =>
                     {
-                        querier.FilterAppIds((AppId)appId);
-                        await querier.QueryAsync(async (servers) =>
+                        foreach (var server in servers)
                         {
-                            lock (allServersLock)
-                            {
-                                foreach (var server in servers)
-                                {
-                                    allServers.Add($"{server.Address}:{server.Port}");
-                                }
-                            }
-                            await Task.CompletedTask;
-                        });
+                            allServers.Add($"{server.Address}:{server.Port}");
+                        }
+                        return Task.CompletedTask;
+                    });
+
+                    if (_includeFakeIp)
+                    {
+                        fakeIpServers.AddRange(querier.FakeIpServers);
                     }
                 }
                 catch (Exception ex)
                 {
                     lock (resultsLock)
                     {
-                        results.Add(new QueryResult
-                        {
-                            AppId = appId,
-                            Error = $"Master server query failed: {ex.Message}"
-                        });
+                        results.Add(new QueryResult { AppId = appId, Error = $"Master server query failed: {ex.Message}" });
                     }
                 }
             }
 
-            // If no servers found, return
-            if (allServers.Count == 0)
+            if (allServers.Count == 0 && fakeIpServers.Count == 0)
             {
                 return results;
             }
 
-            // Create server batch for concurrent processing
-            var serverList = allServers.ToList();
-            var batch = new ServerBatch(serverList, appIds, skipInfo, skipRules);
-
-            // Report progress so the (otherwise silent) A2S pass doesn't look hung.
-            var progress = new ProgressLogger(_loggerFactory.CreateLogger<CliServerQuerier>(), serverList.Count);
-
-            // Process servers concurrently
-            var processor = new BatchProcessor(item =>
+            // Directly-addressable servers go over UDP A2S; fake-IP servers over QueryByFakeIP. Run both
+            // concurrently.
+            var directTask = Task.Run(() =>
             {
-                if (item is ServerQueryItem queryItem)
+                if (allServers.Count == 0)
                 {
-                    ProcessServer(queryItem, results, resultsLock, progress);
+                    return;
                 }
-            }, maxTasks: _maxConcurrency);
 
-            processor.AddBatch(batch);
-            processor.Finish();
+                var serverList = allServers.ToList();
+                var batch = new ServerBatch(serverList, appIds, skipInfo, skipRules);
+
+                // Report progress so the (otherwise silent) A2S pass doesn't look hung.
+                var progress = new ProgressLogger(_loggerFactory.CreateLogger<CliServerQuerier>(), serverList.Count);
+
+                var processor = new BatchProcessor(item =>
+                {
+                    if (item is ServerQueryItem queryItem)
+                    {
+                        ProcessServer(queryItem, results, resultsLock, progress);
+                    }
+                }, maxTasks: _maxConcurrency);
+
+                processor.AddBatch(batch);
+                processor.Finish();
+            });
+
+            var fakeProgress = new ProgressLogger(
+                _loggerFactory.CreateLogger<CliServerQuerier>(), fakeIpServers.Count, "fake-IP servers");
+            var fakeIpTask = ProcessFakeIpServersAsync(querier, fakeIpServers, skipInfo, results, resultsLock, fakeProgress);
+
+            await Task.WhenAll(directTask, fakeIpTask);
         }
         catch (Exception ex)
         {
@@ -127,6 +143,46 @@ public class CliServerQuerier
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Queries fake-IP (SDR) servers via QueryByFakeIP. Runs concurrently with the UDP A2S batch; the
+    /// underlying transport serializes/throttles the calls itself.
+    /// </summary>
+    private static async Task ProcessFakeIpServersAsync(
+        MasterServerQuerier querier, List<FakeIpServer> servers, bool skipInfo, List<QueryResult> results, object resultsLock, ProgressLogger progress)
+    {
+        foreach (var fake in servers)
+        {
+            var result = new QueryResult { Server = fake.EndPoint.ToString(), AppId = (int)fake.AppId };
+
+            if (!skipInfo)
+            {
+                try
+                {
+                    var info = await querier.QueryFakeServerInfoAsync(fake);
+                    if (info != null)
+                    {
+                        result.Info = info;
+                    }
+                    else
+                    {
+                        result.InfoError = "QueryByFakeIP returned no data";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result.InfoError = $"QueryByFakeIP failed: {ex.Message}";
+                }
+            }
+
+            lock (resultsLock)
+            {
+                results.Add(result);
+            }
+
+            progress.Increment();
+        }
     }
 
     private void ProcessServer(ServerQueryItem item, List<QueryResult> results, object resultsLock, ProgressLogger progress)

@@ -228,6 +228,10 @@ internal sealed class SimulatedMasterServer : IMasterQuerySource
 
     public Task EnsureConnectedAsync() => Task.CompletedTask;
 
+    // The simulated population has no fake-IP servers.
+    public Task<ServerInfo?> QueryFakeServerInfoAsync(IPEndPoint endpoint, uint appId) => Task.FromResult<ServerInfo?>(null);
+    public Task<Dictionary<string, string>?> QueryFakeServerRulesAsync(IPEndPoint endpoint, uint appId) => Task.FromResult<Dictionary<string, string>?>(null);
+
     public Task<IReadOnlyList<MasterServerRecord>> QueryWithFilterAsync(uint appId, string filter)
     {
         QueryCount++;

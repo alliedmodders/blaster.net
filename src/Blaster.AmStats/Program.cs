@@ -20,6 +20,7 @@ internal class Program
             string? steamPassword = null;
             string? transport = null;
             string? webApiKey = null;
+            bool? includeFakeIp = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -48,6 +49,8 @@ internal class Program
                     transport = args[++i];
                 else if (args[i] == "--steam-webapi-key" && i + 1 < args.Length)
                     webApiKey = args[++i];
+                else if (args[i] == "--include-fakeip")
+                    includeFakeIp = true;
                 else if (args[i] == "--help")
                 {
                     ShowHelp();
@@ -66,7 +69,7 @@ internal class Program
                 builder.SetMinimumLevel(logLevel)
                        .AddCompactConsole()))
             {
-                HandleCommand(config, game, logLevel, steamUsername, steamPassword, transport, webApiKey, loggerFactory);
+                HandleCommand(config, game, logLevel, steamUsername, steamPassword, transport, webApiKey, includeFakeIp, loggerFactory);
             }
             return 0;
         }
@@ -92,12 +95,13 @@ Options:
   --steam-username <U>    Steam username (overrides config/env); steam transport
   --steam-password <P>    Steam password (overrides config/env); steam transport
   --steam-webapi-key <K>  Steam Web API key (overrides config/env); web-api transport
+  --include-fakeip        Also include SDR / fake-IP servers via QueryByFakeIP (config: fakeip.enabled)
   --log-level <LEVEL>     Log level: trace, debug, info, warn, error, critical (default: info)
   --help                  Show this help message
 ");
     }
 
-    static void HandleCommand(string config, string game, LogLevel logLevel, string? steamUsername, string? steamPassword, string? transport, string? webApiKey, ILoggerFactory loggerFactory)
+    static void HandleCommand(string config, string game, LogLevel logLevel, string? steamUsername, string? steamPassword, string? transport, string? webApiKey, bool? includeFakeIp, ILoggerFactory loggerFactory)
     {
         var gameId = game switch
         {
@@ -106,7 +110,7 @@ Options:
             _ => throw new ArgumentException($"Unrecognized game: {game}")
         };
 
-        var collector = new StatsCollector(config, gameId, steamUsername, steamPassword, transport, webApiKey, loggerFactory);
+        var collector = new StatsCollector(config, gameId, steamUsername, steamPassword, transport, webApiKey, includeFakeIp, loggerFactory);
         collector.Collect();
         collector.Finish();
     }

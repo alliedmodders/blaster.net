@@ -21,6 +21,7 @@ public class StatsCollector
     private readonly string _steamUsername;
     private readonly string _steamPassword;
     private readonly string _webApiKey;
+    private readonly bool _includeFakeIp;
     private readonly ILoggerFactory _loggerFactory;
 
     private readonly Dictionary<(string ModString, ulong ModGameId), GameMod> _mods = new();
@@ -38,6 +39,7 @@ public class StatsCollector
         string? steamPasswordOverride = null,
         string? transportOverride = null,
         string? webApiKeyOverride = null,
+        bool? includeFakeIpOverride = null,
         ILoggerFactory? loggerFactory = null)
     {
         var config = ConfigParser.Parse(configPath);
@@ -54,6 +56,9 @@ public class StatsCollector
 
         _transport = MasterServerTransports.Parse(
             ResolveOptional(transportOverride, config, "steam.transport", "BLASTER_STEAM_TRANSPORT"));
+
+        _includeFakeIp = includeFakeIpOverride
+            ?? (bool.TryParse(ResolveOptional(null, config, "fakeip.enabled", "BLASTER_FAKEIP"), out var fakeip) && fakeip);
 
         if (_transport == MasterServerTransport.WebApi)
         {
@@ -184,30 +189,34 @@ public class StatsCollector
 
         // Query master server and collect stats
         var allServers = new HashSet<string>();
-        var lockObj = new object();
+        var fakeIpServers = new List<FakeIpServer>();
+        var liveServers = new ConcurrentBag<Server>();
+
+        // The querier is kept alive past the master query so fake-IP servers can be queried via the
+        // same connection/source during the batch phase.
+        using var master = CreateMasterQuerier();
+        master.IncludeFakeIp = _includeFakeIp;
 
         try
         {
-            using (var master = CreateMasterQuerier())
-            {
-                // Set up filters based on game
-                if (_gameId == 1)
-                    master.FilterAppIds(AppIdHelper.HL1Apps.ToArray());
-                else if (_gameId == 2)
-                    master.FilterAppIds(AppIdHelper.HL2Apps.ToArray());
+            // Set up filters based on game
+            if (_gameId == 1)
+                master.FilterAppIds(AppIdHelper.HL1Apps.ToArray());
+            else if (_gameId == 2)
+                master.FilterAppIds(AppIdHelper.HL2Apps.ToArray());
 
-                // Process servers from master server in batches
-                master.QueryAsync(async (servers) =>
+            master.QueryAsync(servers =>
+            {
+                foreach (var server in servers)
                 {
-                    lock (lockObj)
-                    {
-                        foreach (var server in servers)
-                        {
-                            allServers.Add($"{server.Address}:{server.Port}");
-                        }
-                    }
-                    await Task.CompletedTask;
-                }).Wait();
+                    allServers.Add($"{server.Address}:{server.Port}");
+                }
+                return Task.CompletedTask;
+            }).Wait();
+
+            if (_includeFakeIp)
+            {
+                fakeIpServers.AddRange(master.FakeIpServers);
             }
         }
         catch (Exception ex)
@@ -216,24 +225,30 @@ public class StatsCollector
             throw;
         }
 
-        // Create batch processor for concurrent server queries
-        var serverList = allServers.ToList();
-        var batch = new ServerStatsBatch(serverList);
-        var liveServers = new ConcurrentBag<Server>();
-
-        // Report progress so the (otherwise silent) A2S pass doesn't look hung.
-        var progress = new ProgressLogger(_loggerFactory.CreateLogger<StatsCollector>(), serverList.Count);
-
-        var processor = new BatchProcessor(item =>
+        // Directly-addressable servers over UDP A2S, fake-IP servers over QueryByFakeIP — concurrently.
+        var directTask = Task.Run(() =>
         {
-            if (item is ServerStatsItem serverItem)
-            {
-                ProcessServer(serverItem, liveServers, progress);
-            }
-        }, maxTasks: 20);
+            var serverList = allServers.ToList();
 
-        processor.AddBatch(batch);
-        processor.Finish();
+            // Report progress so the (otherwise silent) A2S pass doesn't look hung.
+            var progress = new ProgressLogger(_loggerFactory.CreateLogger<StatsCollector>(), serverList.Count);
+
+            var processor = new BatchProcessor(item =>
+            {
+                if (item is ServerStatsItem serverItem)
+                {
+                    ProcessServer(serverItem, liveServers, progress);
+                }
+            }, maxTasks: 20);
+
+            processor.AddBatch(new ServerStatsBatch(serverList));
+            processor.Finish();
+        });
+
+        var fakeProgress = new ProgressLogger(
+            _loggerFactory.CreateLogger<StatsCollector>(), fakeIpServers.Count, "fake-IP servers");
+        var fakeIpTask = ProcessFakeIpServersAsync(master, fakeIpServers, liveServers, fakeProgress);
+        Task.WhenAll(directTask, fakeIpTask).GetAwaiter().GetResult();
 
         var preferredValveGameIds = DetermineMostPopulousValveGameIds(liveServers);
         foreach (var server in liveServers)
@@ -271,6 +286,37 @@ public class StatsCollector
         }
 
         progress.Increment();
+    }
+
+    /// <summary>
+    /// Collects info + rules for fake-IP (SDR) servers via QueryByFakeIP. Runs concurrently with the UDP
+    /// A2S batch; the transport serializes/throttles the calls.
+    /// </summary>
+    private async Task ProcessFakeIpServersAsync(MasterServerQuerier master, List<FakeIpServer> servers, ConcurrentBag<Server> liveServers, ProgressLogger progress)
+    {
+        foreach (var fake in servers)
+        {
+            try
+            {
+                var info = await master.QueryFakeServerInfoAsync(fake);
+                if (info == null)
+                {
+                    lock (_globalStats!) { _globalStats.DeadCount++; }
+                }
+                else
+                {
+                    var rules = await master.QueryFakeServerRulesAsync(fake) ?? new Dictionary<string, string>();
+                    liveServers.Add(new Server { Info = info, Rules = rules });
+                    lock (_globalStats!) { _globalStats.AliveCount++; }
+                }
+            }
+            catch
+            {
+                lock (_globalStats!) { _globalStats.DeadCount++; }
+            }
+
+            progress.Increment();
+        }
     }
 
     private void ProcessServerStats(Server server, IReadOnlyDictionary<string, ulong> preferredValveGameIds)

@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 using SteamKit2;
+using SteamKit2.Internal;
 
 namespace Blaster.Valve;
 
@@ -37,6 +38,48 @@ internal sealed class WebApiQuerySource : IMasterQuerySource, IDisposable
     public Task EnsureConnectedAsync() => Task.CompletedTask;
 
     public async Task<IReadOnlyList<MasterServerRecord>> QueryWithFilterAsync(uint appId, string filter)
+        => await ExecuteAsync(() => QueryOnceAsync(filter), $"filter {filter}").ConfigureAwait(false) ?? [];
+
+    public async Task<ServerInfo?> QueryFakeServerInfoAsync(IPEndPoint endpoint, uint appId)
+    {
+        var response = await ExecuteAsync(
+            () => QueryByFakeIpAsync(endpoint, appId, CGameServers_QueryByFakeIP_Request.EQueryType.Query_Ping),
+            $"fakeip-info {endpoint}").ConfigureAwait(false);
+        return response?.ping_data is { } ping ? FakeIpMapper.ToServerInfo(ping, endpoint) : null;
+    }
+
+    public async Task<Dictionary<string, string>?> QueryFakeServerRulesAsync(IPEndPoint endpoint, uint appId)
+    {
+        var response = await ExecuteAsync(
+            () => QueryByFakeIpAsync(endpoint, appId, CGameServers_QueryByFakeIP_Request.EQueryType.Query_Rules),
+            $"fakeip-rules {endpoint}").ConfigureAwait(false);
+        return response?.rules_data is { } rules ? FakeIpMapper.ToRules(rules) : null;
+    }
+
+    private async Task<CGameServers_GameServerQuery_Response> QueryByFakeIpAsync(
+        IPEndPoint endpoint, uint appId, CGameServers_QueryByFakeIP_Request.EQueryType queryType)
+    {
+        var request = new CGameServers_QueryByFakeIP_Request
+        {
+            fake_ip = FakeIpMapper.ToFakeIpValue(endpoint.Address),
+            fake_port = (uint)endpoint.Port,
+            app_id = appId,
+            query_type = queryType,
+        };
+
+        var response = await _gameServers
+            .CallProtobufAsync<CGameServers_GameServerQuery_Response, CGameServers_QueryByFakeIP_Request>(
+                HttpMethod.Get, "QueryByFakeIP", request, 1)
+            .ConfigureAwait(false);
+
+        return response.Body;
+    }
+
+    /// <summary>
+    /// Runs a Web API call under the shared rate-limit throttle, honouring 429 Retry-After and retrying
+    /// transient failures. Returns null after exhausting retries so one bad call doesn't abort the run.
+    /// </summary>
+    private async Task<T?> ExecuteAsync<T>(Func<Task<T>> call, string description) where T : class
     {
         var errorAttempts = 0;
         var rateLimitWaits = 0;
@@ -47,15 +90,15 @@ internal sealed class WebApiQuerySource : IMasterQuerySource, IDisposable
 
             try
             {
-                return await QueryOnceAsync(filter).ConfigureAwait(false);
+                return await call().ConfigureAwait(false);
             }
             catch (SteamKitWebRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 if (++rateLimitWaits > ValveConstants.WebApiMaxRateLimitWaits)
                 {
-                    _logger?.LogError("Web API still rate limited (429) after {Waits} waits (filter: {Filter}); giving up on this query.",
-                        rateLimitWaits - 1, filter);
-                    return [];
+                    _logger?.LogError("Web API still rate limited (429) after {Waits} waits ({Desc}); giving up.",
+                        rateLimitWaits - 1, description);
+                    return null;
                 }
 
                 var delay = ParseRetryAfter(ex.Headers.RetryAfter, DateTimeOffset.UtcNow)
@@ -65,21 +108,21 @@ internal sealed class WebApiQuerySource : IMasterQuerySource, IDisposable
                     delay = MaxRetryAfter;
                 }
 
-                _logger?.LogWarning("Web API rate limited (429); waiting {Delay} before retry (filter: {Filter}).", delay, filter);
+                _logger?.LogWarning("Web API rate limited (429); waiting {Delay} before retry ({Desc}).", delay, description);
                 await Task.Delay(delay).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 if (++errorAttempts >= ValveConstants.MasterQueryMaxAttempts)
                 {
-                    _logger?.LogError("Web API query failed after {Attempts} attempts (filter: {Filter}): {Error}. Giving up on this query.",
-                        errorAttempts, filter, ex.Message);
-                    return [];
+                    _logger?.LogError("Web API call failed after {Attempts} attempts ({Desc}): {Error}. Giving up.",
+                        errorAttempts, description, ex.Message);
+                    return null;
                 }
 
                 var backoff = TimeSpan.FromMilliseconds(ValveConstants.MasterQueryRetryBaseDelayMs * errorAttempts);
-                _logger?.LogWarning("Web API query attempt {Attempt} failed (filter: {Filter}): {Error}. Retrying in {Backoff}.",
-                    errorAttempts, filter, ex.Message, backoff);
+                _logger?.LogWarning("Web API call attempt {Attempt} failed ({Desc}): {Error}. Retrying in {Backoff}.",
+                    errorAttempts, description, ex.Message, backoff);
                 await Task.Delay(backoff).ConfigureAwait(false);
             }
         }

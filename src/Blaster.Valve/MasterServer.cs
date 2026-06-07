@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using SteamKit2;
+using SteamKit2.Internal;
 
 namespace Blaster.Valve;
 
@@ -13,6 +14,12 @@ namespace Blaster.Valve;
 /// Callback invoked with each batch of servers from the master server.
 /// </summary>
 public delegate Task MasterQueryCallback(IEnumerable<IPEndPoint> servers);
+
+/// <summary>
+/// An SDR / fake-IP server (169.254.* address) discovered in the master results. These can't be reached
+/// by UDP A2S; they are queried via QueryByFakeIP, which needs the owning <see cref="AppId"/>.
+/// </summary>
+public sealed record FakeIpServer(IPEndPoint EndPoint, uint AppId);
 
 /// <summary>
 /// Selects how server lists are retrieved: a live Steam connection or the Steam Web API.
@@ -47,6 +54,12 @@ internal interface IMasterQuerySource
 {
     Task EnsureConnectedAsync();
     Task<IReadOnlyList<MasterServerRecord>> QueryWithFilterAsync(uint appId, string filter);
+
+    /// <summary>Queries a fake-IP (SDR) server for info via QueryByFakeIP; null on failure.</summary>
+    Task<ServerInfo?> QueryFakeServerInfoAsync(IPEndPoint endpoint, uint appId);
+
+    /// <summary>Queries a fake-IP (SDR) server for rules via QueryByFakeIP; null on failure.</summary>
+    Task<Dictionary<string, string>?> QueryFakeServerRulesAsync(IPEndPoint endpoint, uint appId);
 }
 
 /// <summary>
@@ -96,6 +109,7 @@ internal class SteamConnectionPool : IMasterQuerySource
     private readonly SteamClient _client;
     private readonly CallbackManager _callbackManager;
     private readonly GameServersHandler _gameServers;
+    private readonly GameServers _gameServersService;
     private readonly SteamUser _steamUser;
     private readonly ILogger? _logger;
     private bool _loggedOn;
@@ -103,9 +117,14 @@ internal class SteamConnectionPool : IMasterQuerySource
     private TaskCompletionSource<bool>? _loginTask;
     private TaskCompletionSource<ServerQueryResponseCallback>? _currentQueryTask;
     private ulong _currentJobId;
+    private TaskCompletionSource<SteamUnifiedMessages.ServiceMethodResponse<CGameServers_GameServerQuery_Response>>? _currentFakeIpTask;
+    private ulong _currentFakeIpJobId;
     private DateTime _lastQueryTime = DateTime.MinValue;
     private readonly TimeSpan _rateLimitInterval = TimeSpan.FromMilliseconds(100); // ~10 queries/second
     private readonly Lock _queryLock = new();
+    // Serializes fake-IP queries: the single connection (one in-flight slot + callback pump) can't be
+    // driven from the consumer's parallel A2S batch concurrently.
+    private readonly SemaphoreSlim _fakeIpSemaphore = new(1, 1);
     private readonly string? _username;
     private readonly string? _password;
 
@@ -142,10 +161,15 @@ internal class SteamConnectionPool : IMasterQuerySource
         _gameServers = new GameServersHandler();
         _client.AddHandler(_gameServers);
 
+        // SteamKit's generated GameServers unified service routes QueryByFakeIP responses (used to
+        // query SDR / fake-IP servers that can't be reached by ordinary UDP A2S).
+        _gameServersService = _client.GetHandler<SteamUnifiedMessages>()!.CreateService<GameServers>();
+
         _callbackManager.Subscribe<SteamClient.ConnectedCallback>(OnConnected);
         _callbackManager.Subscribe<SteamClient.DisconnectedCallback>(OnDisconnected);
         _callbackManager.Subscribe<SteamUser.LoggedOnCallback>(OnLoggedOn);
         _callbackManager.Subscribe<ServerQueryResponseCallback>(OnQueryCallback);
+        _callbackManager.Subscribe<SteamUnifiedMessages.ServiceMethodResponse<CGameServers_GameServerQuery_Response>>(OnFakeIpResponse);
     }
 
     public async Task EnsureConnectedAsync()
@@ -266,6 +290,114 @@ internal class SteamConnectionPool : IMasterQuerySource
         }
     }
 
+    /// <summary>
+    /// Queries a fake-IP server for info (ping data) and maps it to <see cref="ServerInfo"/>; null on
+    /// failure. Safe to call from the consumer's parallel A2S batch (serialized on the connection).
+    /// </summary>
+    public async Task<ServerInfo?> QueryFakeServerInfoAsync(IPEndPoint endpoint, uint appId)
+    {
+        var response = await QueryByFakeIpAsync(
+            FakeIpMapper.ToFakeIpValue(endpoint.Address), (uint)endpoint.Port, appId,
+            CGameServers_QueryByFakeIP_Request.EQueryType.Query_Ping);
+        return response?.ping_data is { } ping ? FakeIpMapper.ToServerInfo(ping, endpoint) : null;
+    }
+
+    /// <summary>
+    /// Queries a fake-IP server for rules (cvars); null on failure.
+    /// </summary>
+    public async Task<Dictionary<string, string>?> QueryFakeServerRulesAsync(IPEndPoint endpoint, uint appId)
+    {
+        var response = await QueryByFakeIpAsync(
+            FakeIpMapper.ToFakeIpValue(endpoint.Address), (uint)endpoint.Port, appId,
+            CGameServers_QueryByFakeIP_Request.EQueryType.Query_Rules);
+        return response?.rules_data is { } rules ? FakeIpMapper.ToRules(rules) : null;
+    }
+
+    /// <summary>
+    /// Queries one SDR / fake-IP server via the unified <c>GameServers.QueryByFakeIP</c> method (these
+    /// servers can't be reached by ordinary UDP A2S). <paramref name="queryType"/> selects ping (info),
+    /// players, or rules. Returns null on failure/timeout. Requires an authenticated login. Serialized
+    /// via a semaphore so it is safe to call from a parallel batch.
+    /// </summary>
+    public async Task<CGameServers_GameServerQuery_Response?> QueryByFakeIpAsync(
+        uint fakeIp, uint fakePort, uint appId, CGameServers_QueryByFakeIP_Request.EQueryType queryType)
+    {
+        await _fakeIpSemaphore.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await QueryByFakeIpCoreAsync(fakeIp, fakePort, appId, queryType);
+        }
+        finally
+        {
+            _fakeIpSemaphore.Release();
+        }
+    }
+
+    private async Task<CGameServers_GameServerQuery_Response?> QueryByFakeIpCoreAsync(
+        uint fakeIp, uint fakePort, uint appId, CGameServers_QueryByFakeIP_Request.EQueryType queryType)
+    {
+        lock (_queryLock)
+        {
+            var timeSinceLastQuery = DateTime.UtcNow - _lastQueryTime;
+            if (timeSinceLastQuery < _rateLimitInterval)
+            {
+                Thread.Sleep((int)(_rateLimitInterval - timeSinceLastQuery).TotalMilliseconds);
+            }
+            _lastQueryTime = DateTime.UtcNow;
+        }
+
+        var responseTask = new TaskCompletionSource<SteamUnifiedMessages.ServiceMethodResponse<CGameServers_GameServerQuery_Response>>();
+        _currentFakeIpTask = responseTask;
+
+        try
+        {
+            var request = new CGameServers_QueryByFakeIP_Request
+            {
+                fake_ip = fakeIp,
+                fake_port = fakePort,
+                app_id = appId,
+                query_type = queryType,
+            };
+            var job = _gameServersService.QueryByFakeIP(request);
+            _currentFakeIpJobId = job.JobID;
+
+            var stopwatch = Stopwatch.StartNew();
+            while (!responseTask.Task.IsCompleted && stopwatch.Elapsed < TimeSpan.FromSeconds(15))
+            {
+                _callbackManager.RunWaitCallbacks(TimeSpan.FromMilliseconds(10));
+                await Task.Delay(10);
+            }
+
+            if (!responseTask.Task.IsCompleted)
+            {
+                _logger?.LogDebug("QueryByFakeIP {Ip}:{Port} (app {AppId}, {Type}) timed out", fakeIp, fakePort, appId, queryType);
+                return null;
+            }
+
+            var callback = await responseTask.Task.ConfigureAwait(false);
+            if (callback.Result != EResult.OK)
+            {
+                _logger?.LogDebug("QueryByFakeIP {Ip}:{Port} (app {AppId}, {Type}) -> {Result}", fakeIp, fakePort, appId, queryType, callback.Result);
+                return null;
+            }
+
+            return callback.Body;
+        }
+        finally
+        {
+            _currentFakeIpTask = null;
+        }
+    }
+
+    private void OnFakeIpResponse(SteamUnifiedMessages.ServiceMethodResponse<CGameServers_GameServerQuery_Response> callback)
+    {
+        var task = _currentFakeIpTask;
+        if (task != null && !task.Task.IsCompleted && (ulong)callback.JobID == _currentFakeIpJobId)
+        {
+            task.TrySetResult(callback);
+        }
+    }
+
     private void OnConnected(SteamClient.ConnectedCallback callback)
     {
         // Login with credentials if provided, otherwise anonymous
@@ -342,6 +474,8 @@ public class MasterServerQuerier : IDisposable
     private readonly IMasterQuerySource _source;
     private readonly bool _ownsSource;
     private readonly List<uint> _appIds = [];
+    private readonly List<FakeIpServer> _fakeIpServers = [];
+    private bool _includeFakeIp;
     private readonly ILogger<MasterServerQuerier>? _logger;
     private FanOutStats? _stats;
     private int _runQueries;
@@ -359,6 +493,20 @@ public class MasterServerQuerier : IDisposable
         public int GameAddrQueries;
         public int OrBatchQueries;
     }
+
+    /// <summary>
+    /// When true, SDR / fake-IP (169.254.*) servers are not dropped; they are collected (with their app
+    /// id) into <see cref="FakeIpServers"/> during <see cref="QueryAsync"/> for querying via
+    /// <see cref="QueryFakeServerInfoAsync"/> / <see cref="QueryFakeServerRulesAsync"/> instead of UDP A2S.
+    /// </summary>
+    public bool IncludeFakeIp
+    {
+        get => _includeFakeIp;
+        set => _includeFakeIp = value;
+    }
+
+    /// <summary>Fake-IP servers collected during the most recent <see cref="QueryAsync"/> run.</summary>
+    public IReadOnlyList<FakeIpServer> FakeIpServers => _fakeIpServers;
 
     public MasterServerQuerier(string? cellIdFilePath = null, string? username = null, string? password = null, ILogger<MasterServerQuerier>? logger = null)
     {
@@ -407,6 +555,20 @@ public class MasterServerQuerier : IDisposable
     {
         _appIds.Clear();
     }
+
+    /// <summary>
+    /// Queries a fake-IP server (from <see cref="FakeIpServers"/>) for info via QueryByFakeIP. Returns
+    /// null on failure. Safe to call concurrently with UDP A2S queries.
+    /// </summary>
+    public Task<ServerInfo?> QueryFakeServerInfoAsync(FakeIpServer server)
+        => _source.QueryFakeServerInfoAsync(server.EndPoint, server.AppId);
+
+    /// <summary>
+    /// Queries a fake-IP server (from <see cref="FakeIpServers"/>) for rules via QueryByFakeIP. Returns
+    /// null on failure.
+    /// </summary>
+    public Task<Dictionary<string, string>?> QueryFakeServerRulesAsync(FakeIpServer server)
+        => _source.QueryFakeServerRulesAsync(server.EndPoint, server.AppId);
 
     // Map tier tunables. When a bucket overflows, maps appearing at least MapPopularityThreshold
     // times in that bucket's (capped) response get their own \map\ query; the top MaxMapsPerLayer
@@ -474,6 +636,7 @@ public class MasterServerQuerier : IDisposable
         var stopwatch = Stopwatch.StartNew();
         _runQueries = 0;
         _runCapHits = 0;
+        _fakeIpServers.Clear();
 
         _logger?.LogInformation("Starting query for {Count} app IDs: {AppIds}",
             _appIds.Count, string.Join(", ", _appIds));
@@ -503,7 +666,7 @@ public class MasterServerQuerier : IDisposable
         {
             // Tier 1: single broad query.
             var tier1Results = await QuerySourceAsync(appId, BuildFilter(appId, ["\\gametype\\valve"], []));
-            totalNew += await SendNewAsync(tier1Results, seen, callback);
+            totalNew += await SendNewAsync(appId,tier1Results, seen, callback);
 
             if (tier1Results.Count < ValveConstants.MaxServersPerQuery)
                 return totalNew;
@@ -514,7 +677,7 @@ public class MasterServerQuerier : IDisposable
             foreach (var (nor, and) in Tier2Specs)
             {
                 var bucket = await QuerySourceAsync(appId, BuildFilter(appId, nor, and));
-                totalNew += await SendNewAsync(bucket, seen, callback);
+                totalNew += await SendNewAsync(appId,bucket, seen, callback);
 
                 if (bucket.Count >= ValveConstants.MaxServersPerQuery)
                 {
@@ -631,7 +794,7 @@ public class MasterServerQuerier : IDisposable
         // Catch-all: everything in this bucket that isn't on one of the handled maps.
         string[] catchAllNor = [..nor, ..handledMaps.Select(m => $"\\map\\{m}")];
         var rest = await QuerySourceAsync(appId, BuildFilter(appId, catchAllNor, and));
-        totalNew += await SendNewAsync(rest, seen, callback);
+        totalNew += await SendNewAsync(appId,rest, seen, callback);
 
         if (rest.Count >= ValveConstants.MaxServersPerQuery)
         {
@@ -698,7 +861,7 @@ public class MasterServerQuerier : IDisposable
 
             // Re-query the bucket with the folded clusters excluded to see what remains.
             var remainder = await QuerySourceAsync(appId, BuildFilter(appId, effectiveNor, stuckAnd));
-            totalNew += await SendNewAsync(remainder, seen, callback);
+            totalNew += await SendNewAsync(appId,remainder, seen, callback);
             if (remainder.Count >= ValveConstants.MaxServersPerQuery)
             {
                 // Still over cap after folding — recurse to peel more clusters or prefix-split the rest.
@@ -736,7 +899,7 @@ public class MasterServerQuerier : IDisposable
         // names exactly equal to namePrefix.
         string[] catchAllNor = [..nor, ..selectors.Select(s => s.Item1)];
         var catchAll = await QuerySourceAsync(appId, BuildFilter(appId, catchAllNor, stuckAnd));
-        total += await SendNewAsync(catchAll, seen, callback);
+        total += await SendNewAsync(appId,catchAll, seen, callback);
         if (catchAll.Count >= ValveConstants.MaxServersPerQuery)
         {
             // Leftover names share no sampled prefix character; enumerate them by host IP.
@@ -845,7 +1008,7 @@ public class MasterServerQuerier : IDisposable
             : [..baseAnd, $"\\or\\{batch.Count}{string.Concat(batch.Select(b => b.Condition))}"];
 
         var results = await QuerySourceAsync(appId, BuildFilter(appId, nor, and));
-        var newCount = await SendNewAsync(results, seen, callback);
+        var newCount = await SendNewAsync(appId,results, seen, callback);
 
         if (results.Count < ValveConstants.MaxServersPerQuery)
         {
@@ -869,9 +1032,9 @@ public class MasterServerQuerier : IDisposable
     // for the prefix catch-all / IP enumeration to sweep up rather than corrupting the filter.
     internal static bool IsFilterSafe(string value) => !value.Contains('\\') && !value.Contains('*');
 
-    private async Task<int> SendNewAsync(IReadOnlyList<MasterServerRecord> servers, HashSet<string> seen, MasterQueryCallback callback)
+    private async Task<int> SendNewAsync(uint appId, IReadOnlyList<MasterServerRecord> servers, HashSet<string> seen, MasterQueryCallback callback)
     {
-        var newServers = FilterNewServers(servers, seen);
+        var newServers = FilterNewServers(appId, servers, seen);
         if (newServers.Count > 0)
         {
             _logger?.LogDebug("Callback: {Count} new servers ({Dupes} duplicates filtered)",
@@ -888,21 +1051,29 @@ public class MasterServerQuerier : IDisposable
     }
 
     /// <summary>
-    /// Filters servers to only return new ones not already seen.
+    /// Deduplicates servers and returns the new directly-addressable endpoints for the callback. SDR /
+    /// fake-IP (169.254.*) servers can't be reached by UDP A2S: when <see cref="IncludeFakeIp"/> is set
+    /// they're collected (with their app id) into <see cref="FakeIpServers"/> for QueryByFakeIP instead;
+    /// otherwise they're dropped.
     /// </summary>
-    private static List<IPEndPoint> FilterNewServers(IEnumerable<MasterServerRecord> servers, HashSet<string> seen)
+    private List<IPEndPoint> FilterNewServers(uint appId, IEnumerable<MasterServerRecord> servers, HashSet<string> seen)
     {
         var newServers = new List<IPEndPoint>();
 
         foreach (var record in servers)
         {
             var server = record.EndPoint;
-            if (IsExcludedBeforeQuery(server))
+            var key = server.ToString();
+
+            if (FakeIpMapper.IsFakeIp(server.Address))
             {
+                if (_includeFakeIp && seen.Add(key))
+                {
+                    _fakeIpServers.Add(new FakeIpServer(server, appId));
+                }
                 continue;
             }
 
-            var key = server.ToString();
             if (seen.Add(key))
             {
                 newServers.Add(server);
@@ -910,23 +1081,6 @@ public class MasterServerQuerier : IDisposable
         }
 
         return newServers;
-    }
-
-    private static bool IsExcludedBeforeQuery(IPEndPoint server)
-    {
-        var address = server.Address;
-        if (address.AddressFamily == AddressFamily.InterNetworkV6 && address.IsIPv4MappedToIPv6)
-        {
-            address = address.MapToIPv4();
-        }
-
-        if (address.AddressFamily != AddressFamily.InterNetwork)
-        {
-            return false;
-        }
-
-        var bytes = address.GetAddressBytes();
-        return bytes.Length == 4 && bytes[0] == 169 && bytes[1] == 254;
     }
 
     private void ThrowIfDisposed()

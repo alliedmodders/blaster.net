@@ -22,6 +22,7 @@ internal class Program
             string? steamPassword = null;
             string? webApiKey = null;
             var transport = "steam";
+            var includeFakeIp = false;
 
             int i = 0;
             while (i < args.Length)
@@ -83,6 +84,9 @@ internal class Program
                         if (i + 1 < args.Length)
                             webApiKey = args[++i];
                         break;
+                    case "--include-fakeip":
+                        includeFakeIp = true;
+                        break;
                     case "--help":
                     case "-h":
                         ShowHelp();
@@ -124,7 +128,7 @@ internal class Program
                 builder.SetMinimumLevel(logLevel)
                        .AddCompactConsole()))
             {
-                await HandleCommand(appIds.ToArray(), format, skipInfo, skipRules, concurrency, transportMode, steamUsername, steamPassword, webApiKey, loggerFactory);
+                await HandleCommand(appIds.ToArray(), format, skipInfo, skipRules, concurrency, transportMode, steamUsername, steamPassword, webApiKey, includeFakeIp, loggerFactory);
             }
             return 0;
         }
@@ -153,6 +157,7 @@ Options:
   --log-level <LEVEL>    Log level: trace, debug, info, warn, error, critical (default: info)
   --no-info              Skip server info queries
   --no-rules             Skip rules queries
+  --include-fakeip       Also include SDR / fake-IP servers, queried via QueryByFakeIP
   --concurrency <N>      Max concurrent servers to query (default: 20)
   --help                 Show this help message
 ");
@@ -168,9 +173,10 @@ Options:
         string? steamUsername,
         string? steamPassword,
         string? webApiKey,
+        bool includeFakeIp,
         ILoggerFactory loggerFactory)
     {
-        var querier = new CliServerQuerier(concurrency, transport, steamUsername, steamPassword, webApiKey, loggerFactory);
+        var querier = new CliServerQuerier(concurrency, transport, steamUsername, steamPassword, webApiKey, includeFakeIp, loggerFactory);
         var results = await querier.QueryServersAsync(appIds, skipInfo: skipInfo, skipRules: skipRules);
 
         var formatter = new OutputFormatter();
