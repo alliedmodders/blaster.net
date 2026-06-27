@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using SteamKit2;
+using SteamKit2.Authentication;
 using SteamKit2.Internal;
 
 namespace Blaster.Valve;
@@ -436,20 +437,44 @@ internal class SteamConnectionPool : IMasterQuerySource
         }
     }
 
-    private void OnConnected(SteamClient.ConnectedCallback callback)
+    private async void OnConnected(SteamClient.ConnectedCallback callback)
     {
-        // Login with credentials if provided, otherwise anonymous
-        if (!string.IsNullOrEmpty(_username) && !string.IsNullOrEmpty(_password))
-        {
-            _steamUser.LogOn(new SteamUser.LogOnDetails
-            {
-                Username = _username,
-                Password = _password
-            });
-        }
-        else
+        // Login with credentials if provided, otherwise anonymous.
+        if (string.IsNullOrEmpty(_username) || string.IsNullOrEmpty(_password))
         {
             _steamUser.LogOnAnonymous();
+            return;
+        }
+
+        // Steam no longer accepts raw username/password via SteamUser.LogOn (it returns
+        // InvalidPassword). Exchange the credentials for a refresh token through the authentication
+        // service, then log on with that token. This runs on the callback pump thread; the awaits
+        // are driven by the RunWaitCallbacks loop in EnsureConnectedAsync.
+        try
+        {
+            // No Authenticator is supplied: we don't support Steam Guard (2FA). If the account ever
+            // requires a guard code, polling throws and the error is surfaced below rather than
+            // blocking on console input (this tool runs headless).
+            var authSession = await _client.Authentication.BeginAuthSessionViaCredentialsAsync(
+                new AuthSessionDetails
+                {
+                    Username = _username,
+                    Password = _password,
+                    IsPersistentSession = false,
+                }).ConfigureAwait(false);
+
+            var pollResponse = await authSession.PollingWaitForResultAsync().ConfigureAwait(false);
+
+            _steamUser.LogOn(new SteamUser.LogOnDetails
+            {
+                Username = pollResponse.AccountName,
+                AccessToken = pollResponse.RefreshToken,
+            });
+        }
+        catch (Exception ex)
+        {
+            // Surface to EnsureConnectedAsync's wait loop the same way a failed LoggedOnCallback would.
+            _connectError = $"authentication failed: {ex.Message}";
         }
     }
 
