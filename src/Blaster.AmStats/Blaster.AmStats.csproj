@@ -6,7 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.86" />
+    <PackageReference Include="Dapper" Version="2.1.89" />
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
   </ItemGroup>
